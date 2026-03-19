@@ -29,8 +29,14 @@
 //	Initially, no ready threads.
 //----------------------------------------------------------------------
 
+static int ThreadCompare(Thread *a,Thread *b){
+    if(a->priority > b->priority) return -1;
+    else if(a->priority < b->priority) return 1;
+    else return 0;
+}
+
 Scheduler::Scheduler() {
-    readyList = new List<Thread *>;
+    readyList = new SortedList<Thread *>(ThreadCompare);
     toBeDestroyed = NULL;
 }
 
@@ -54,7 +60,8 @@ void Scheduler::ReadyToRun(Thread *thread) {
     DEBUG(dbgThread, "Putting thread on ready list: " << thread->getName());
 
     thread->setStatus(READY);
-    readyList->Append(thread);
+    // readyList->Append(thread);
+    readyList->Insert(thread);
 }
 
 //----------------------------------------------------------------------
