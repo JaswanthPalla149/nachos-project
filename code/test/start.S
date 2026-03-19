@@ -60,8 +60,6 @@ Add:
 
 	.globl Abs
 	.ent	Abs
-
-
 Abs:
 	addiu $2,$0,SC_Abs
 	syscall
