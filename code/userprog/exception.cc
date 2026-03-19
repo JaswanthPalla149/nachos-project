@@ -157,11 +157,12 @@ void handle_SC_Add() {
 void handle_SC_Abs() {
     DEBUG(dbgSys, "Abs " << kernel->machine->ReadRegister(4));
 
+    /* Process SysAdd Systemcall*/
     int result;
     result = SysAbs((int)kernel->machine->ReadRegister(4));
 
     DEBUG(dbgSys, "Add returning with " << result << "\n");
-
+    /* Prepare Result */
     kernel->machine->WriteRegister(2, (int)result);
 
     return move_program_counter();
@@ -407,9 +408,26 @@ void handle_SC_GetPid() {
     return move_program_counter();
 }
 
+// void handle_SC_Sleep() {
+//     int time = kernel->machine->ReadRegister(4);
+//     printf("DEBUG: Sleep called with time=%d\n", time);
+//     SysSleep(time);
+//     move_program_counter();
+//     return;
+// }
+void handle_SC_Sleep() {
+    int time = kernel->machine->ReadRegister(4);
+    printf("DEBUG: Sleep called with time=%d\n", time);
+
+    // 🔥 MOVE THIS UP
+    move_program_counter();
+
+    SysSleep(time);  // now safe to block
+}
+
 void ExceptionHandler(ExceptionType which) {
     int type = kernel->machine->ReadRegister(2);
-
+        printf("DEBUG: ExceptionHandler - which=%d, type=%d\n", which, type);
     DEBUG(dbgSys, "Received Exception " << which << " type: " << type << "\n");
 
     switch (which) {
@@ -432,10 +450,10 @@ void ExceptionHandler(ExceptionType which) {
             switch (type) {
                 case SC_Halt:
                     return handle_SC_Halt();
-                case SC_Add:
-                    return handle_SC_Add();
                 case SC_Abs:
                     return handle_SC_Abs();
+                case SC_Add:
+                    return handle_SC_Add();
                 case SC_ReadNum:
                     return handle_SC_ReadNum();
                 case SC_PrintNum:
@@ -491,6 +509,8 @@ void ExceptionHandler(ExceptionType which) {
                 case SC_ThreadExit:
                 case SC_ThreadJoin:
                     return handle_not_implemented_SC(type);
+                case SC_Sleep:
+                    return handle_SC_Sleep();
 
                 default:
                     cerr << "Unexpected system call " << type << "\n";
