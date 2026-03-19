@@ -50,14 +50,6 @@ Halt:
 	j	$31
 	.end Halt
 
-	.globl Add
-	.ent	Add
-Add:
-	addiu $2,$0,SC_Add
-	syscall
-	j 	$31
-	.end Add
-
 	.globl Abs
 	.ent	Abs
 Abs:
@@ -65,6 +57,14 @@ Abs:
 	syscall
 	j 	$31
 	.end Abs
+
+	.globl Add
+	.ent	Add
+Add:
+	addiu $2,$0,SC_Add
+	syscall
+	j 	$31
+	.end Add
 
 	.globl Exit
 	.ent	Exit
@@ -153,6 +153,16 @@ Seek:
 	syscall
 	j	$31
 	.end Seek
+
+	.globl Sleep
+	.ent	Sleep
+Sleep:
+	addiu $2,$0,SC_Sleep
+	syscall
+	nop
+	j	$31
+	nop
+	.end Sleep
 
         .globl ThreadFork
         .ent    ThreadFork
