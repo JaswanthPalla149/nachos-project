@@ -499,6 +499,14 @@ void ExceptionHandler(ExceptionType which) {
             DEBUG(dbgSys, "Switch to system mode\n");
             break;
         case PageFaultException:
+        {
+            int faultingAddr = kernel->machine->ReadRegister(BadVAddrReg);
+            cout << "=== Got a Page fault at the address: " << faultingAddr << " ===" << endl;
+            kernel->currentThread->space->LoadPage(faultingAddr);
+            kernel->currentThread->space->RestoreState();
+            return;
+        }
+        case PageFaultException:
         case ReadOnlyException:
         case BusErrorException:
         case AddressErrorException:
@@ -592,6 +600,9 @@ void ExceptionHandler(ExceptionType which) {
                     break;
             }
             break;
+
+
+            
         default:
             cerr << "Unexpected user mode exception" << (int)which << "\n";
             break;
