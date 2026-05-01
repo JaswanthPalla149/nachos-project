@@ -20,7 +20,6 @@
 #define UserStackSize 1024  // increase this as necessary!
 #define UserHeapSize 2048
 
-
 class AddrSpace {
    public:
     AddrSpace();                // Create an address space.
@@ -34,25 +33,33 @@ class AddrSpace {
 
     void SaveState();     // Save/restore address space-specific
     void RestoreState();  // info on a context switch
-    void LoadPage(int vaddr);
+   //  void LoadPage(int vaddr);
 
-    int sbrk(int increment);
     // Translate virtual address _vaddr_
     // to physical address _paddr_. _mode_
     // is 0 for Read, 1 for Write.
     ExceptionType Translate(unsigned int vaddr, unsigned int *paddr, int mode);
+    int NumPages() const {return numPages;}
+    TranslationEntry* GetPageTable() const {return pageTable;}
+    TranslationEntry* FindPTE(int vpn);
+    void LoadPage(int vaddr);
+    void SaveTLBState();
+    void ClearTLB();
+
+    int sbrk(int increment);
     // void InitRegisters();
    private:
     TranslationEntry *pageTable;  // Assume linear page table translation
                                   // for now!
     unsigned int numPages;        // Number of pages in the virtual
                                   // address space
+
     char* exeFileName;
     NoffHeader noffH;
     OpenFile* executable;
+
     void InitRegisters();  // Initialize user-level CPU registers,
                            // before jumping to user code
-
     unsigned int heapStart;
     unsigned int heapTop;
 };

@@ -89,7 +89,8 @@ AddrSpace::~AddrSpace() {
             kernel->gPhysPageBitMap->Clear(pageTable[i].physicalPage);
         }
     }
-    delete executable;
+    
+    delete executable; // Close the executable file when the program exits
     delete[] pageTable;
 }
 
@@ -131,8 +132,6 @@ AddrSpace::AddrSpace(char *fileName) {
     numPages = divRoundUp(size, PageSize);
     size = numPages * PageSize;
 
-
-
     /* Place the heap start AFTER the highest virtual extent of all segments,
      * rounded up to a page boundary.  Simply summing sizes is wrong when
      * rdata introduces a gap between .text and .data in virtual memory. */
@@ -161,7 +160,6 @@ AddrSpace::AddrSpace(char *fileName) {
         this->heapStart = this->heapTop;
     }
 
-
     ASSERT(numPages <= NumPhysPages);  // check we're not trying
                                        // to run anything too big --
                                        // at least until we have
@@ -189,10 +187,7 @@ AddrSpace::AddrSpace(char *fileName) {
         pageTable[i].readOnly = FALSE;  // if the code segment was entirely on
         // a separate page, we could set its
         // pages to be read-only
-        // xóa các trang này trên memory
-        bzero(&(kernel->machine
-                    ->mainMemory[pageTable[i].physicalPage * PageSize]),
-              PageSize);
+        // Physical page is not yet allocated (-1); LoadPage() will bzero when loaded.
         DEBUG(dbgAddr, "phyPage " << pageTable[i].physicalPage);
     }
 
@@ -212,12 +207,24 @@ AddrSpace::AddrSpace(char *fileName) {
     //             PageSize, noffH.initData.inFileAddr + (i * PageSize));
     // }
 
+    // kernel->addrLock->V();
+    // delete executable;
+
     exeFileName = fileName;
     this->executable = executable;
     this->noffH = noffH;
+
     return;
 }
 
+//----------------------------------------------------------------------
+// AddrSpace::Execute
+// 	Run a user program using the current thread
+//
+//      The program is assumed to have already been loaded into
+//      the address space
+//
+//----------------------------------------------------------------------
 
 int AddrSpace::sbrk(int increment){
     int oldHeapTop = heapTop;
@@ -231,15 +238,6 @@ int AddrSpace::sbrk(int increment){
     heapTop+=increment;
     return oldHeapTop;
 }
-
-//----------------------------------------------------------------------
-// AddrSpace::Execute
-// 	Run a user program using the current thread
-//
-//      The program is assumed to have already been loaded into
-//      the address space
-//
-//----------------------------------------------------------------------
 
 void AddrSpace::Execute() {
     kernel->currentThread->space = this;
@@ -295,7 +293,11 @@ void AddrSpace::InitRegisters() {
 //	For now, don't need to save anything!
 //----------------------------------------------------------------------
 
-void AddrSpace::SaveState() {}
+void AddrSpace::SaveState() {
+#ifdef USE_TLB
+    SaveTLBState();
+#endif
+}
 
 //----------------------------------------------------------------------
 // AddrSpace::RestoreState
@@ -306,8 +308,16 @@ void AddrSpace::SaveState() {}
 //----------------------------------------------------------------------
 
 void AddrSpace::RestoreState() {
+#ifdef USE_TLB
+    // With TLB, the hardware uses the TLB not the page table directly.
+    // Set pageTable to NULL so the hardware knows to use TLB.
+    kernel->machine->pageTable = NULL;
+    kernel->machine->pageTableSize = 0;
+    ClearTLB();
+#else
     kernel->machine->pageTable = pageTable;
     kernel->machine->pageTableSize = numPages;
+#endif
 }
 
 //----------------------------------------------------------------------
@@ -384,4 +394,48 @@ void AddrSpace::LoadPage(int vaddr){
     }
 
     pageTable[vpn].valid = TRUE;
+}
+
+//----------------------------------------------------------------------
+// AddrSpace::FindPTE
+//  Find the page table entry for the given virtual page number.
+//  Returns NULL if vpn is out of range.
+//----------------------------------------------------------------------
+TranslationEntry *AddrSpace::FindPTE(int vpn) {
+    if (vpn < 0 || (unsigned int)vpn >= numPages)
+        return NULL;
+    return &pageTable[vpn];
+}
+
+//----------------------------------------------------------------------
+// AddrSpace::SaveTLBState
+//  Walk the TLB and write use/dirty bits back into the software page table.
+//  Called on context switch (SaveState) so we don't lose access information.
+//----------------------------------------------------------------------
+void AddrSpace::SaveTLBState() {
+#ifdef USE_TLB
+    for (int i = 0; i < TLBSize; i++) {
+        TranslationEntry &tlbEntry = kernel->machine->tlb[i];
+        if (tlbEntry.valid) {
+            TranslationEntry *pte = FindPTE(tlbEntry.virtualPage);
+            if (pte != NULL) {
+                pte->use   |= tlbEntry.use;
+                pte->dirty |= tlbEntry.dirty;
+            }
+        }
+    }
+#endif
+}
+
+//----------------------------------------------------------------------
+// AddrSpace::ClearTLB
+//  Invalidate all TLB entries.
+//  Called on context switch (RestoreState) to flush stale translations.
+//----------------------------------------------------------------------
+void AddrSpace::ClearTLB() {
+#ifdef USE_TLB
+    for (int i = 0; i < TLBSize; i++) {
+        kernel->machine->tlb[i].valid = FALSE;
+    }
+#endif
 }
