@@ -1,0 +1,489 @@
+diff --git a/code/build.linux/Makefile b/code/build.linux/Makefile
+index 8762e3b..62f35a1 100644
+--- a/code/build.linux/Makefile
++++ b/code/build.linux/Makefile
+@@ -191,7 +191,7 @@
+ # of "-DSIM_FIX" to the DEFINES.  This should be enabled by default
+ # and eventually will not require the symbol definition
+ ################################################################
+-DEFINES =  -DFILESYS_STUB -DRDATA -DSIM_FIX
++DEFINES =  -DUSE_TLB -DFILESYS_STUB -DRDATA -DSIM_FIX
+ 
+ 
+ #####################################################################
+diff --git a/code/test/Makefile b/code/test/Makefile
+index 4b88313..5ea9ac4 100644
+--- a/code/test/Makefile
++++ b/code/test/Makefile
+@@ -112,7 +112,7 @@ ifeq ($(hosttype),unknown)
+ PROGRAMS = unknownhost
+ else
+ # change this if you create a new test program!
+-PROGRAMS = abs add halt shell matmult sort segments test_syscall num_io char_io random str_io ascii bubblesort help create_file open_file readwrite exec test_sem sinhvien voinuoc main child sleep_test sleep_test_simple pipe_parent pipe_child malloc_test
++PROGRAMS = abs add halt shell matmult sort segments test_syscall num_io char_io random str_io ascii bubblesort help create_file open_file readwrite exec test_sem sinhvien voinuoc main child sleep_test sleep_test_simple pipe_parent pipe_child malloc_test tlb_test
+ endif
+ 
+ all: $(PROGRAMS)
+@@ -283,6 +283,12 @@ pipe_child: pipe_child.o start.o
+ 	$(LD) $(LDFLAGS) start.o pipe_child.o -o pipe_child.coff
+ 	$(COFF2NOFF) pipe_child.coff pipe_child
+ 
++tlb_test.o: tlb_test.c
++	$(CC) $(CFLAGS) -c tlb_test.c
++tlb_test: tlb_test.o start.o
++	$(LD) $(LDFLAGS) start.o tlb_test.o -o tlb_test.coff
++	$(COFF2NOFF) tlb_test.coff tlb_test
++	
+ main.o: main.c
+ 	$(CC) $(CFLAGS) -c main.c
+ main: main.o start.o
+diff --git a/code/test/tlb_test.c b/code/test/tlb_test.c
+new file mode 100644
+index 0000000..b64b0b7
+--- /dev/null
++++ b/code/test/tlb_test.c
+@@ -0,0 +1,105 @@
++/* tlb_test.c
++ *
++ * TLB stress test for Nachos.
++ *
++ * Goals:
++ *   1. Demand paging: touch many virtual pages cold so every first access
++ *      generates a TLB miss (PageFaultException) that HandleTLBMiss() must
++ *      service.
++ *   2. TLB replacement: stride across more than TLBSize (4) distinct pages
++ *      in a single tight loop, forcing Round-Robin evictions.
++ *   3. Correctness under replacement: write a pattern, evict those TLB
++ *      entries by touching other pages, then read back and verify — confirms
++ *      that evicted entries are reloaded correctly and that dirty bits are
++ *      preserved.
++ *   4. Re-use: a second sequential scan verifies that already-loaded pages
++ *      can be re-entered into the TLB without corrupting data.
++ *
++ * PageSize = 128 bytes, TLBSize = 4.
++ * An int is 4 bytes, so 128/4 = 32 ints per page.
++ * STRIDE = 32 means every array access lands on a *different* page,
++ * guaranteeing a TLB replacement after the 4th access in phase 2.
++ */
++
++#include "syscall.h"
++
++/* ── configuration ─────────────────────────────────────────────────── */
++#define INTS_PER_PAGE  32       /* PageSize(128) / sizeof(int)(4)       */
++#define NUM_PAGES      10       /* touch 10 distinct pages of data      */
++#define ARRAY_SIZE     (INTS_PER_PAGE * NUM_PAGES)  /* 320 ints         */
++
++/* ── data in BSS (uninit) so it lives on separate virtual pages ─────── */
++int A[ARRAY_SIZE];
++
++/* ── helper ─────────────────────────────────────────────────────────── */
++static void print_result(int pass, int which) {
++    /* print "PASS n" or "FAIL n" using only PrintNum / PrintChar */
++    if (pass) {
++        PrintChar('P'); PrintChar('A'); PrintChar('S'); PrintChar('S');
++    } else {
++        PrintChar('F'); PrintChar('A'); PrintChar('I'); PrintChar('L');
++    }
++    PrintChar(' ');
++    PrintNum(which);
++    PrintChar('\n');
++}
++
++int main() {
++    int i, ok;
++
++    /* ── Phase 1: sequential write across all pages ─────────────────
++     * Each group of 32 consecutive writes lives on one page.
++     * 10 pages → 10 cold TLB misses minimum, plus replacements after
++     * the 4th miss because TLBSize == 4.                              */
++    for (i = 0; i < ARRAY_SIZE; i++) {
++        A[i] = i;
++    }
++
++    /* ── Phase 2: strided read (one int per page per pass) ──────────
++     * Access pattern: A[0], A[32], A[64], …, A[288]  (page 0..9)
++     * then A[1], A[33], …  Every group of 4 accesses exhausts the TLB
++     * and the 5th forces a Round-Robin eviction.                      */
++    ok = 1;
++    for (i = 0; i < INTS_PER_PAGE; i++) {
++        int p;
++        for (p = 0; p < NUM_PAGES; p++) {
++            int idx = p * INTS_PER_PAGE + i;
++            if (A[idx] != idx) {
++                ok = 0;
++            }
++        }
++    }
++    print_result(ok, 1);   /* "PASS 1" if strided read matches written values */
++
++    /* ── Phase 3: overwrite with inverse values ──────────────────────
++     * Write A[i] = ARRAY_SIZE - 1 - i (reverse), then read back.
++     * This exercises dirty-bit tracking: modified pages must not lose
++     * their data when TLB entries are evicted and reloaded.           */
++    for (i = 0; i < ARRAY_SIZE; i++) {
++        A[i] = ARRAY_SIZE - 1 - i;
++    }
++    ok = 1;
++    for (i = 0; i < ARRAY_SIZE; i++) {
++        if (A[i] != ARRAY_SIZE - 1 - i) {
++            ok = 0;
++        }
++    }
++    print_result(ok, 2);   /* "PASS 2" if reverse values are intact */
++
++    /* ── Phase 4: partial re-use ─────────────────────────────────────
++     * Write only the first half, read back the entire array.
++     * Second half must still hold its phase-3 values (dirty tracking). */
++    for (i = 0; i < ARRAY_SIZE / 2; i++) {
++        A[i] = i * 2;          /* even numbers in first half */
++    }
++    ok = 1;
++    for (i = 0; i < ARRAY_SIZE / 2; i++) {
++        if (A[i] != i * 2) ok = 0;
++    }
++    for (i = ARRAY_SIZE / 2; i < ARRAY_SIZE; i++) {
++        if (A[i] != ARRAY_SIZE - 1 - i) ok = 0;
++    }
++    print_result(ok, 3);   /* "PASS 3" if both halves are correct */
++
++    Halt();
++}
+\ No newline at end of file
+diff --git a/code/userprog/addrspace.cc b/code/userprog/addrspace.cc
+index afa4e6e..ee1735e 100644
+--- a/code/userprog/addrspace.cc
++++ b/code/userprog/addrspace.cc
+@@ -89,7 +89,8 @@ AddrSpace::~AddrSpace() {
+             kernel->gPhysPageBitMap->Clear(pageTable[i].physicalPage);
+         }
+     }
+-    delete executable;
++    
++    delete executable; // Close the executable file when the program exits
+     delete[] pageTable;
+ }
+ 
+@@ -131,8 +132,6 @@ AddrSpace::AddrSpace(char *fileName) {
+     numPages = divRoundUp(size, PageSize);
+     size = numPages * PageSize;
+ 
+-
+-
+     /* Place the heap start AFTER the highest virtual extent of all segments,
+      * rounded up to a page boundary.  Simply summing sizes is wrong when
+      * rdata introduces a gap between .text and .data in virtual memory. */
+@@ -161,7 +160,6 @@ AddrSpace::AddrSpace(char *fileName) {
+         this->heapStart = this->heapTop;
+     }
+ 
+-
+     ASSERT(numPages <= NumPhysPages);  // check we're not trying
+                                        // to run anything too big --
+                                        // at least until we have
+@@ -189,10 +187,7 @@ AddrSpace::AddrSpace(char *fileName) {
+         pageTable[i].readOnly = FALSE;  // if the code segment was entirely on
+         // a separate page, we could set its
+         // pages to be read-only
+-        // xóa các trang này trên memory
+-        bzero(&(kernel->machine
+-                    ->mainMemory[pageTable[i].physicalPage * PageSize]),
+-              PageSize);
++        // Physical page is not yet allocated (-1); LoadPage() will bzero when loaded.
+         DEBUG(dbgAddr, "phyPage " << pageTable[i].physicalPage);
+     }
+ 
+@@ -212,12 +207,24 @@ AddrSpace::AddrSpace(char *fileName) {
+     //             PageSize, noffH.initData.inFileAddr + (i * PageSize));
+     // }
+ 
++    // kernel->addrLock->V();
++    // delete executable;
++
+     exeFileName = fileName;
+     this->executable = executable;
+     this->noffH = noffH;
++
+     return;
+ }
+ 
++//----------------------------------------------------------------------
++// AddrSpace::Execute
++// 	Run a user program using the current thread
++//
++//      The program is assumed to have already been loaded into
++//      the address space
++//
++//----------------------------------------------------------------------
+ 
+ int AddrSpace::sbrk(int increment){
+     int oldHeapTop = heapTop;
+@@ -232,15 +239,6 @@ int AddrSpace::sbrk(int increment){
+     return oldHeapTop;
+ }
+ 
+-//----------------------------------------------------------------------
+-// AddrSpace::Execute
+-// 	Run a user program using the current thread
+-//
+-//      The program is assumed to have already been loaded into
+-//      the address space
+-//
+-//----------------------------------------------------------------------
+-
+ void AddrSpace::Execute() {
+     kernel->currentThread->space = this;
+ 
+@@ -295,7 +293,11 @@ void AddrSpace::InitRegisters() {
+ //	For now, don't need to save anything!
+ //----------------------------------------------------------------------
+ 
+-void AddrSpace::SaveState() {}
++void AddrSpace::SaveState() {
++#ifdef USE_TLB
++    SaveTLBState();
++#endif
++}
+ 
+ //----------------------------------------------------------------------
+ // AddrSpace::RestoreState
+@@ -306,8 +308,16 @@ void AddrSpace::SaveState() {}
+ //----------------------------------------------------------------------
+ 
+ void AddrSpace::RestoreState() {
++#ifdef USE_TLB
++    // With TLB, the hardware uses the TLB not the page table directly.
++    // Set pageTable to NULL so the hardware knows to use TLB.
++    kernel->machine->pageTable = NULL;
++    kernel->machine->pageTableSize = 0;
++    ClearTLB();
++#else
+     kernel->machine->pageTable = pageTable;
+     kernel->machine->pageTableSize = numPages;
++#endif
+ }
+ 
+ //----------------------------------------------------------------------
+@@ -385,3 +395,47 @@ void AddrSpace::LoadPage(int vaddr){
+ 
+     pageTable[vpn].valid = TRUE;
+ }
++
++//----------------------------------------------------------------------
++// AddrSpace::FindPTE
++//  Find the page table entry for the given virtual page number.
++//  Returns NULL if vpn is out of range.
++//----------------------------------------------------------------------
++TranslationEntry *AddrSpace::FindPTE(int vpn) {
++    if (vpn < 0 || (unsigned int)vpn >= numPages)
++        return NULL;
++    return &pageTable[vpn];
++}
++
++//----------------------------------------------------------------------
++// AddrSpace::SaveTLBState
++//  Walk the TLB and write use/dirty bits back into the software page table.
++//  Called on context switch (SaveState) so we don't lose access information.
++//----------------------------------------------------------------------
++void AddrSpace::SaveTLBState() {
++#ifdef USE_TLB
++    for (int i = 0; i < TLBSize; i++) {
++        TranslationEntry &tlbEntry = kernel->machine->tlb[i];
++        if (tlbEntry.valid) {
++            TranslationEntry *pte = FindPTE(tlbEntry.virtualPage);
++            if (pte != NULL) {
++                pte->use   |= tlbEntry.use;
++                pte->dirty |= tlbEntry.dirty;
++            }
++        }
++    }
++#endif
++}
++
++//----------------------------------------------------------------------
++// AddrSpace::ClearTLB
++//  Invalidate all TLB entries.
++//  Called on context switch (RestoreState) to flush stale translations.
++//----------------------------------------------------------------------
++void AddrSpace::ClearTLB() {
++#ifdef USE_TLB
++    for (int i = 0; i < TLBSize; i++) {
++        kernel->machine->tlb[i].valid = FALSE;
++    }
++#endif
++}
+\ No newline at end of file
+diff --git a/code/userprog/addrspace.h b/code/userprog/addrspace.h
+index ad1616a..93f3dd9 100644
+--- a/code/userprog/addrspace.h
++++ b/code/userprog/addrspace.h
+@@ -20,7 +20,6 @@
+ #define UserStackSize 1024  // increase this as necessary!
+ #define UserHeapSize 2048
+ 
+-
+ class AddrSpace {
+    public:
+     AddrSpace();                // Create an address space.
+@@ -34,27 +33,35 @@ class AddrSpace {
+ 
+     void SaveState();     // Save/restore address space-specific
+     void RestoreState();  // info on a context switch
+-    void LoadPage(int vaddr);
++   //  void LoadPage(int vaddr);
+ 
+-    int sbrk(int increment);
+     // Translate virtual address _vaddr_
+     // to physical address _paddr_. _mode_
+     // is 0 for Read, 1 for Write.
+     ExceptionType Translate(unsigned int vaddr, unsigned int *paddr, int mode);
++    int NumPages() const {return numPages;}
++    TranslationEntry* GetPageTable() const {return pageTable;}
++    TranslationEntry* FindPTE(int vpn);
++    void LoadPage(int vaddr);
++    void SaveTLBState();
++    void ClearTLB();
++
++    int sbrk(int increment);
+     // void InitRegisters();
+    private:
+     TranslationEntry *pageTable;  // Assume linear page table translation
+                                   // for now!
+     unsigned int numPages;        // Number of pages in the virtual
+                                   // address space
++
+     char* exeFileName;
+     NoffHeader noffH;
+     OpenFile* executable;
++
+     void InitRegisters();  // Initialize user-level CPU registers,
+                            // before jumping to user code
+-
+     unsigned int heapStart;
+     unsigned int heapTop;
+ };
+ 
+-#endif  // ADDRSPACE_H
++#endif  // ADDRSPACE_H
+\ No newline at end of file
+diff --git a/code/userprog/exception.cc b/code/userprog/exception.cc
+index 70a7c9e..a1b9bbb 100644
+--- a/code/userprog/exception.cc
++++ b/code/userprog/exception.cc
+@@ -495,6 +495,84 @@ void handle_SC_Sbrk(){
+     return move_program_counter();
+ }
+ 
++#ifdef USE_TLB
++// ============================================================
++// TLB Management
++// ============================================================
++
++static int nextTLBSlot = 0;
++
++// Performance counters
++static int gTLBMissCount        = 0;
++static int gTLBReplaceCount     = 0;
++static int gTLBInvalidFillCount = 0;
++
++// Choose a TLB slot to evict: prefer invalid slots, then Round-Robin.
++static int SelectTLBVictim() {
++    for (int i = 0; i < TLBSize; i++) {
++        if (!kernel->machine->tlb[i].valid) {
++            gTLBInvalidFillCount++;
++            return i;
++        }
++    }
++    int victim = nextTLBSlot;
++    nextTLBSlot = (nextTLBSlot + 1) % TLBSize;
++    gTLBReplaceCount++;
++    return victim;
++}
++
++// Write use/dirty bits of a TLB entry back to the software page table.
++static void SaveBackTLBEntry(int slot) {
++    TranslationEntry &tlbEntry = kernel->machine->tlb[slot];
++    if (!tlbEntry.valid) return;
++    TranslationEntry *pte =
++        kernel->currentThread->space->FindPTE(tlbEntry.virtualPage);
++    if (pte != NULL) {
++        pte->use   |= tlbEntry.use;
++        pte->dirty |= tlbEntry.dirty;
++    }
++}
++
++// Handle a TLB miss:
++//   1. Get the faulting virtual address.
++//   2. Look up the VPN in the process page table.
++//   3. If the page is not yet in physical memory, demand-load it.
++//   4. Install the PTE into the TLB (evicting an entry if needed).
++// Returns true on success, false if a genuine (unrecoverable) page fault.
++static bool HandleTLBMiss() {
++    gTLBMissCount++;
++
++    int faultAddr = kernel->machine->ReadRegister(BadVAddrReg);
++    int vpn = faultAddr / PageSize;
++
++    // Look up the page table entry.
++    TranslationEntry *pte =
++        kernel->currentThread->space->FindPTE(vpn);
++    if (pte == NULL) {
++        // VPN is out of range -- real address error.
++        return false;
++    }
++
++    // If the page is not yet in physical memory, demand-load it.
++    if (!pte->valid) {
++        kernel->currentThread->space->LoadPage(faultAddr);
++        // Re-fetch: LoadPage sets valid and physicalPage.
++        pte = kernel->currentThread->space->FindPTE(vpn);
++        if (pte == NULL || !pte->valid) return false;
++    }
++
++    // Pick a TLB slot, saving back the entry we are about to evict.
++    int slot = SelectTLBVictim();
++    SaveBackTLBEntry(slot);
++
++    // Install the PTE into the chosen TLB slot.
++    kernel->machine->tlb[slot] = *pte;
++    kernel->machine->tlb[slot].valid = TRUE;
++
++    return true;  // retry the faulting instruction
++}
++#endif  // USE_TLB
++
+ void ExceptionHandler(ExceptionType which) {
+     int type = kernel->machine->ReadRegister(2);
+ 
+@@ -506,14 +584,15 @@ void ExceptionHandler(ExceptionType which) {
+             DEBUG(dbgSys, "Switch to system mode\n");
+             break;
+         case PageFaultException:
+-        {
+-            int faultingAddr = kernel->machine->ReadRegister(BadVAddrReg);
+-            cout << "=== Got a Page fault at the address: " << faultingAddr << " ===" << endl;
+-            kernel->currentThread->space->LoadPage(faultingAddr);
+-            kernel->currentThread->space->RestoreState();
+-            return;
+-        }
+-        case PageFaultException:
++#ifdef USE_TLB
++            if (HandleTLBMiss()) {
++                return;  // retry the instruction -- do NOT advance PC!
++            }
++#endif
++            cerr << "Page fault at virtual address "
++                 << kernel->machine->ReadRegister(BadVAddrReg) << "\n";
++            SysHalt();
++            ASSERTNOTREACHED();
+         case ReadOnlyException:
+         case BusErrorException:
+         case AddressErrorException:
+@@ -611,7 +690,7 @@ void ExceptionHandler(ExceptionType which) {
+             break;
+ 
+ 
+-            
++
+         default:
+             cerr << "Unexpected user mode exception" << (int)which << "\n";
+             break;
