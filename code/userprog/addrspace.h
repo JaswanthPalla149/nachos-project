@@ -18,6 +18,8 @@
 #include "noff.h"
 
 #define UserStackSize 1024  // increase this as necessary!
+#define UserHeapSize 2048
+
 
 class AddrSpace {
    public:
@@ -34,6 +36,7 @@ class AddrSpace {
     void RestoreState();  // info on a context switch
     void LoadPage(int vaddr);
 
+    int sbrk(int increment);
     // Translate virtual address _vaddr_
     // to physical address _paddr_. _mode_
     // is 0 for Read, 1 for Write.
@@ -49,6 +52,9 @@ class AddrSpace {
     OpenFile* executable;
     void InitRegisters();  // Initialize user-level CPU registers,
                            // before jumping to user code
+
+    unsigned int heapStart;
+    unsigned int heapTop;
 };
 
 #endif  // ADDRSPACE_H
